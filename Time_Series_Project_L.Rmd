@@ -1,0 +1,466 @@
+---
+title: "Time_Series_Project"
+output: pdf_document
+date: '2023-02-14'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  fig.path = 'figs/',
+  tidy = TRUE,
+  fig.align = 'center',
+  fig.show = 'hold',
+  par = TRUE,
+  warning = FALSE,
+  message = FALSE
+  )
+RNGkind("default")
+```
+The dataset we will analyse is composed of measurements of carbon dioxide on Mauna Loa volcano. It is the longest record of direct measurements of CO2 in the atmosphere, having data dating back to the 1950s. 
+
+The series is indexed by the years of measurements, but in the analysis we will discard the indexing for convenience. 
+
+## Premliminary data analysis 
+
+We can start our analysis by plotting the series and printing a summary of it to observe its main features. 
+```{r echo=FALSE}
+library("astsa")
+?cardox
+
+data = cardox
+z <- as.vector(data)
+plot(data, main = "Monthly mean Carbon Dioxide - Hawaii",
+     ylab = "CO2", type = "l", xlab = "Months")
+summary(data)
+```
+As we can see from the plot we have a non stationary time series, with a growing trend over time and a clear seasonality. 
+
+\hfill\break
+We now compute the mean adjusted version of the series, which is the one we will analyse. Furthermore, we cut off our series the last $10$ observations for later use in prediction.
+```{r echo=FALSE}
+z = z[1:(729-10)] - mean(z[1:(729-10)])
+plot(z, main = "Monthly mean Carbon Dioxide - Hawaii",
+     ylab = "CO2", type = "l", xlab = "Months")
+```
+As we can see from the plot the mean of the series is now $0$.
+\hfill\break
+To better understand seasonality we zoom in the first $10$ years.
+From the plot one can notice that the series has a peak per year.
+```{r echo=FALSE}
+plot(z[1:120], main = "Monthly mean Carbon Dioxide - Hawaii",
+     ylab = "CO2", type = "l", xlab = "Months")
+```
+To confirm our guess, we can plot the autocorrelation function (acf from now on) as well and check for a repeated pattern in its decay.
+
+```{r echo=FALSE}
+acf(z[9:45])
+```
+We can see that our guess was pretty accurate. Hence we conclude that we have a 12 months cycle. 
+
+Now we remove the linear trend by applying the $\nabla$ operator. As we can see from the first plot the series is now stationary, but from the acf plot we can notice that it still has the seasonality cycles. 
+
+```{r echo=FALSE}
+n = length(z)
+del1 = rep(NA, n)
+
+for (i in 2:n) {
+  del1[i] = z[i] - z[i-1]
+}
+
+plot(del1[1:n], main = "Monthly mean Carbon Dioxide - Hawaii",
+     ylab = "CO2", type = "l", xlab = "Months")
+acf(del1[2:n])  
+```
+
+We can remove the seasonality by differenciating the series with the seasonal del operator, $\nabla_s$.
+\hfill\break
+As expected the series still presents us with a growing trend but we cannot see any clear seasonal pattern anymore. We can see that the acf is slowly deacying, indicating a linear dependence between distant values in time. 
+```{r echo=FALSE}
+diff12 = rep(NA, n)
+
+for (i in 13:n){
+  diff12[i] = z[i] - z[i-12]
+}
+
+acf(diff12[13:n])
+plot(diff12[13:n], type="l")
+```
+
+By applying both the differentiation $\nabla \nabla_s$ at the same time we obtain a stationary time series without cycles. 
+```{r echo=FALSE}
+
+deldiff12 = rep(NA, n)
+
+for (i in 2: n){
+  deldiff12[i] = diff12[i] - diff12[i - 1]
+}
+
+plot(deldiff12[14:n], type ="l")
+acf(deldiff12[14:n])
+```
+We cannot notice any observable seasonal patterns nor linear trends form the plots. 
+
+# Modelling linear trend and seasonality 
+
+Depending on the purpose of our analysis we can proceed in two different ways:
+
+- modelling the trend and cycles of the series 
+
+- finding the process that generated the series  
+
+Clearly in the first case we are interested in understanding and modelling just the trend and cycles featured by the phenomenon. This approach makes a great deal of sense for seasonality that can be considered as deterministic. In the sense that, we may think cycles as caused by the different seasons passing, year after year. 
+\hfill\break
+In contrast to this, the latter approach is aimed at finding the process that generated the datapoints we observed, in order to make predictions.
+This approach is more sensible when dealing with stochastic trends, i.e. trends one cannot consider as unmutable over time as the changing of seasons over an year. 
+\hfill\break 
+Before proceeding to model the series via $ARIMA$ processes, we use linear regression, cyclical means and harmonic regression to estimate the trend and seasonality of the series, following the first approach described. 
+
+## Linear Regression 
+
+```{r echo=FALSE}
+t <- 1:n
+trend <- lm(z~t)
+
+summary(trend)
+
+beta_0 <- trend$coefficients[1]
+beta_1 <- trend$coefficients[2]
+
+
+plot(z, type = "l")
+abline(h=mean(z), lty=3, col="red")
+abline(beta_0, beta_1, col="lightblue", lwd=2)
+```
+
+Above we see the output of the regression 
+$$Y = \beta_0 + \beta_1t + A_t$$
+and the plot of the estimated linear trend. This approach can be considered useful only if we accept the strong assumption that the linear trend will not accelerate its growth or suddenly stop in the future. As here we simply modelled the growing trend of the series as a function of time.  
+
+## Cyclical Means 
+For computational convenience we leave out the first and last $11$ observations, so that we have a series of $59$ whole years from January $1959$ to January $2018$. 
+In this approach we compute the means of the each month over all the years in the series to model the seasonality. Clearly the fit will not be great as we are not taking into account non-stationarity at all. 
+
+```{r echo=FALSE}
+z_1 <- z[11:n-11]
+
+z_matrix <- matrix(z_1, nrow = 59, ncol = 12, byrow = T)
+beta <- rep(NA, 12)
+
+beta <- colSums(z_matrix) / 59
+
+plot(z_1, type = "l")
+lines(rep(beta, 59), col="red")
+```
+
+## Harmonic regression 
+
+Here we model the seasonal cycles of the series as harmonic trends. 
+We create a matrix of covariates 
+$$X = ( \boldsymbol{a}, cos(\frac{2\pi t}{s}), sin(\frac{2\pi t}{s}))
+\quad \text{where} \quad  \boldsymbol{a}=(1,1, ...,1)^T$$
+and a vector of parameters 
+$$B = (\alpha, \gamma_1, \delta_1, \gamma_2, \delta_2, ... \gamma_J, \delta_J)$$
+and then can perform the regression 
+$$Y = X'B + A$$
+
+```{r echo=FALSE}
+t <- 1:n
+
+x <- matrix(NA, nrow = n, ncol = 2)
+x[1:n, 1] <- cos((2*pi*t)/12)
+x[1:n, 2] <- sin((2*pi*t)/12)
+
+trend_h <- lm(z ~ x[, 1] + x[, 2])
+summary(trend_h)
+alpha <- trend_h$coefficients[1]
+delta <- trend_h$coefficients[2]
+gamma <- trend_h$coefficients[3]
+
+
+harmonic <- alpha + delta*x[, 1] + gamma*x[, 2]
+
+plot(z, type = "l")
+lines(harmonic, type = "l", col = "red", lwd = 2)
+```
+
+Also the harmonic regression does not take into account the non-stationarity of the series, but just models its seasonality
+
+## Model 1: $ARIMA(0,1,1) \times (0,1,1)_{s = 12}$
+
+\hfill\break 
+We can now start modelling the time series using $ARIMA$ models. Modelling a time series means that we are trying to investigate the underlying stochastic mechanism that gives rise to the observed series. As we have stated from the beginning, our data are seasonal and non-stationary. To deal with that we have decided to use a multiplicative $ARIMA$: $ARIMA(0,1,1) \times (0,1,1)_{s = 12}$. The multiplicative model allows us to take into account correlation at seasonal lags and at their neighbouring lags too.
+
+Basically, this model states that the seasonal difference $\nabla \nabla_{s =12}Z_t$ is a weighted linear combination of white noises observed at previous different times. Indeed, we have:
+$$\nabla \nabla_{12}Z_t = A_{t} + \theta_1 * A_{t-1}  + \eta_{12} * A_{t-12} + \theta_1 * \eta_{12} * A_{t-13}$$
+
+```{r echo = FALSE}
+model1 = arima(z, c(0,1,1), list(order = c(0,1,1),period = 12),
+               method = "ML")
+deldiff12_fit = rep(NA, n)
+a_t           = rep(0, n)
+theta1        = model1$coef[1]
+eta12         = model1$coef[2]
+
+for ( i in 14:n){
+  deldiff12_fit[i] = theta1*a_t[i-1]+eta12*a_t[i-12]+theta1 * eta12*a_t[i-13]
+  a_t[i]           = deldiff12[i] - deldiff12_fit[i]
+}
+```
+
+To have a quick view of our model's performances we plot the observed $\nabla \nabla_{12}Z_t$ with their fitted values $\nabla \nabla_{12}\hat{Z_t} = \theta_1 * A_{t-1}  + \eta_{12} * A_{t-12} + \theta_1 * \eta_{12} * A_{t-13}$.
+
+```{r echo= FALSE}
+plot(deldiff12[14:n], main = "Monthly mean Carbon Dioxide - Hawaii",
+     ylab = "Del_Diff12(CO2)", xlab = "Months")
+lines(deldiff12_fit[14:n], col="darkcyan")
+```
+This kind of plot is probably not very insightful, but later on we will better visualize the goodness of fit by coming back to the original $Z_t$ and their analogous fitted values. However, we are quite satisfied about our model performances: the blue line is quite successful in interpolating the series behaviour. 
+
+### Model diagnostics: residuals' analysis
+
+We can now perform some model diagnostic, by analysing model's residuals. We start by plotting residuals against time: we want them to be in a rectangular shape, randomly oscillating around $0$. Below we see no paculiar pattern, hence we are satisfied. 
+```{r echo = FALSE}
+res_1 = model1$residuals
+plot(res_1, main = "Residuals - model 1")
+abline(h = 0,col="darkblue",lwd=2)
+```
+We proceed by checking for residuals' Normality. To investigate how plausible Normality is we start with the following plots:
+
+```{r echo = FALSE}
+
+hist(res_1, main = "histogram of residuals", freq = F, 
+     xlim = c(-0.8, 0.8), breaks = 45)
+lines(density(res_1),col="darkblue", lwd = 2)
+lines(seq(-0.8, 0.8, length = 100), 
+      dnorm(seq(-0.8, 0.8, length = 100), mean(res_1), sd(res_1)),
+      col = "darkorange3", lwd = 2)
+
+par(mfrow=c(1,2))
+qqnorm(res_1, main="QQ-plot")
+qqline(res_1, col = "darkblue", lwd = 2)
+boxplot(res_1)
+```
+All the three of them seem to suggest that the Normality assumption is reasonable. Indeed, from the histogram, we see that the observed distribution (blue line) is close to the orange one, representing the theoretical residuals' Normal distribution.
+
+To have a more formal Normality check we perform both Shapiro-Wilk and Jarque-Bera Tests.
+
+```{r echo = FALSE, warning=FALSE}
+shapiro.test(res_1)
+library (tseries)
+jarque.bera.test(res_1) 
+```
+We see that Shapiro Wilk suggests to reject $H_0$ hypothesis (i.e. Residuals are Normal) at a significance level $\alpha = 0.05$. However, we decide to rely more on what suggested by the Jarque-Bera test and our plots, and we can conclude that Normality assumption is reasonable.
+
+Finally, we investigate residuals' autocorrelation. From the acf we see that residuals are not correlated. Since they are Normally distributed and uncorrelated, residuals' independence is confirmed.
+
+
+```{r}
+plot(acf(res_1,lag.max=50),
+     main="autocorrelation of the residuals",ylim=c(-1,1))
+```
+
+We are now able to fit our second multiplicative seasonal model; after that we will perform model selection by looking at AIC, BIC, MAE and RMSE. Finally, we will make some predictions by using the chosen model.
+
+## Model 2: $ARIMA(1,1,0) \times (1,1,0)_{s=12}$ 
+
+Now we can try to model the series with a different multiplicative seasonal model: $ARIMA(1,1,0) \times (1,1,0)_{s=12}$.
+The model is actually an $ARI(1,1,0) \times (1,1,0)_{s=12}$, the multiplicative part, has been added to better model the yearly seasonality as in the previous case. 
+
+The model is 
+$$\nabla\nabla_sZ_t = \phi \nabla\nabla_sZ_{t-1} + \lambda \nabla\nabla_sZ_{t-12} - \phi \lambda \nabla\nabla_sZ_{t-13}$$
+whence we have,
+$$\nabla\nabla_sZ_t = \phi(Z_{t-1} - Z_{t-13} - Z_{t-2} + Z_{t-14}) + \lambda(Z_{t-12} - Z_{t-24} - Z_{t- 13} + Z_{t-25}) - \phi \lambda (Z_{t-13} - Z_{t-25} - Z_{t- 14} + Z_{t-27})$$
+```{r echo = FALSE}
+model2 =  arima(z, c(1,1,0), list(order = c(1,1,0),period = 12),
+                      method = "ML")
+phi    = model2$coef[1]
+lambda = model2$coef[2]
+
+A_2      = rep(0, n)
+deldiff2 = rep(NA, n)
+for (i in 27: n){
+  deldiff2[i] = phi *( z[i-1] - z[i-2] - z[i -13] + z[i-14]) +
+    lambda *( z[i-12]-z[i-13]-z[i-24]+ z[i-25]) - phi * lambda*
+    (z[i-13] - z[i-14]- z[i-25] + z[i-26])
+}
+plot(deldiff12[27:n], main = "Monthly mean Carbon Dioxide - Hawaii",
+     ylab = "Del_Diff12(CO2)", xlab = "Months")
+lines(deldiff2[27:n], col="darkcyan")
+```
+As before, this plot is probably not so insightful; however it seems that also in this second model, the fitted values are quite good at interpolating our series' behaviour.
+We proceed the model's analysis by perfoming model diagnostic.
+
+### Model Diagnostics: residuals' analysis 
+
+Here we perform model diagnostics, checking the assumptions of Normality of residuals and of independence of residuals. 
+```{r echo = FALSE}
+res_2 = model2$residuals
+plot(res_2, main = "Residuals - model 2")
+abline(h = 0,col="darkblue",lwd=2)
+```
+From the above plot we see no peculiar pattern in residuals, meaning that they randomly oscillates around their $0$ mean.
+
+Histogram of residuals to check the closeness of the empirical distribution to the theoretical Normal distribution.
+```{r echo = FALSE}
+hist(res_2, main = "histogram of residuals - model 2", freq = F, 
+     xlim = c(-0.8, 0.8), breaks = 45)
+lines(density(res_2),col="darkblue", lwd = 2)
+lines(seq(-0.8, 0.8, length = 100), 
+      dnorm(seq(-0.8, 0.8, length = 100), mean(res_2), sd(res_2)),
+      col = "darkorange3", lwd = 2)
+```
+The blue line (observed residuals' distribution) is very close to the orange line (theoretical residuals' Normal distribution). Hence Normality seems to be a very plausible assumption. This is also confirmed by looking at the QQ-plot and Boxplot: 
+```{r echo = FALSE}
+par(mfrow=c(1,2))
+qqnorm(res_2, main="QQ-plot -Model 2")
+qqline(res_2, col = "darkblue", lwd = 2)
+boxplot(res_2)
+par(mfrow=c(1,1))
+```
+As last formal check we perform Shapiro-Wilk and Jarque-Bera tests for Normality:
+
+```{r echo = FALSE, error = FALSE}
+shapiro.test(res_2) 
+library(tseries)
+jarque.bera.test(res_2)
+```
+For this second model, both tests suggest to not reject $H_0$: residuals' Normality is confirmed. 
+
+We now verify that residuals are not correlated by looking at the acf:
+```{r echo = FALSE}
+plot(acf(res_1,lag.max=50),
+     main="autocorrelation of the residuals",ylim=c(-1,1))
+```
+
+We have no surprises: residuals are non correlated. Given the normality assumption and non-correlation, we can state that residuals are independent.
+
+## Model selection
+
+We now perform model selection by relying on $AIC, BIC, MAE, RMSE$. We will then use the chosen model to make predictions, thus seeing how our model performs with unseen data.
+
+```{r echo = FALSE}
+
+# BIC
+BIC1 = -2* model1$loglik + 3*log(n) # 3 parameters: theta, eta12, sigma^2
+BIC2 = -2* model2$loglik + 3*log(n)
+# MAE
+MAE1 = mean(abs(model1$residuals))
+MAE2 = mean(abs(model2$residuals))
+
+# RMSE
+RMSE_1 <- sqrt(sum((res_1^2)/(n - 14)))
+RMSE_2 <- sqrt(sum((res_2^2)/(n - 27)))
+
+
+```
+
+```{r echo = FALSE}
+Model_1 = c(model1$aic, BIC1, MAE1, RMSE_1)
+Model_2 = c(model2$aic, BIC2, MAE2, RMSE_2)
+DF = data.frame(Model_1, Model_2, row.names = c("AIC", "BIC", "MAE", "RMSE"))
+knitr::kable(DF)
+```
+
+All the above model selection's tools, suggest that the first model, i.e. $ARIMA(0,1,1)x(0,1,1)_{s = 12}$ is the best one. Hence, in the following section we are going to use this model to make some predictions.
+
+
+Before dealing with predictions, we also re-express our model's fitted values as $\hat{Z_t}$. So that now we are able to compare them with the original observations. To recover $\hat{Z_t}$, we just notice that $\nabla\nabla_sZ_t = (Z_t - Z_{t-1}) - (Z_{t-12} - Z_{t-13})$ and we can recover $\hat{Z_t}$ as:
+$$\hat{Z_{t}} = Z_{t-1} + Z_{t-12} - Z_{t-13} + \theta_1 * A_{t-1}  + \eta_{12} * A_{t-12} + \theta_1 * \eta_{12} * A_{t-13}$$
+We are now able to plot $Z_t$ against $\hat{Z_t}$, so that we get a better understand of the model's fit: 
+```{r}
+z_fit1 = rep(NA, n)
+A1     = rep(0, n)
+z_fit1[1:13] = z[1:13]
+
+for (i in 14:n){
+  z_fit1[i] = z[i-1] + z[i-12] - z [i-13] + theta1* A1[i-1] +
+    eta12 * A1[i-12] + theta1*eta12 * A1[i-13]
+  A1[i]     = z[i] - z_fit1[i]
+}
+
+plot(as.vector(z), type = "l", lwd=2)
+lines(z_fit1, type = "l", col = "goldenrod")
+```
+The yellow line representing the fitted values is very good in interpolating the monthly average $CO2$ emissions.
+
+## Predictions using $ARIMA(0,1,1)x(0,1,1)_{s = 12}$
+
+As we have stated at the beginning of the discussion, the whole analysis has been carried by letting out the last $10$ observations. We have thought that this was not impacting our models' performances given the length of the time series. 
+
+Hence we predict these $10$ observations as **one-step ahead predictions**. This means that we predict the sequence $\hat{Z}_t(1), t= n,.., n+9$. Notice that the prediction at $t = n+2$ is made by using the real observation at time $n+1$: $Z_{n+1}$, something we have given our left out observations. It is like being in a fictitious world in which we are able to get new observation, and once we have it, we use it to predict the next monthly $CO2$ average level.
+
+```{r echo=FALSE}
+z.for=rep(NA,times=n)
+for (i in 1:10) {
+  z.for[n+i] = data[n+i-1] + z[n-12+i] - z[n-13+i] + theta1*A1[n+i-1]
+  + eta12*A1[n-12+i] + theta1*eta12*A1[n-13+i]
+  A1[n+i] <- data[n+i] - z.for[n+i]
+}
+```
+
+Together with the predictions we want also to have a $95\%$ Confidence Interval, which, under repeated sampling, will contain each future observation $95$ times out of $100$. Notice that after having observed the future observation, this either will be in the interval or not.
+
+To compute the confidence interval we need to compute the variance of the one-step ahead error. This can be done by calculating $E_t(1)$ using the general formula: $E_t(h) = \sum_{j=0}^{h-1} \psi_j A_{t+h-j}$, and then its variance is given by $V(E_t(h)) = \sigma^2_a \sum_{j=0}^{h-1} \psi_j^2$. 
+Given our model specification a proper choice of $\psi$ is $\psi_1 = \theta_1,$ and for $j\neq1: \psi_j =0$. From the model's fitting we can also recover an estimation of $\sigma^2_a$, given by `model1$sigma2`.
+
+```{r echo = FALSE}
+psi    = rep(0, 10)
+psi_0  = 1
+psi[1] = theta1 
+
+error_var    = rep(0, 10)
+error_var[1] = model1$sigma2
+
+for (i in 2:10){
+  error_var[i] = model1$sigma2 * (psi_0 + sum(psi[1:(i-1)]^2))
+}
+
+```
+Given the error variance we can use standard Normal quantiles to compute the $95\%$ CI, indeed we have: 
+
+$$\hat{Z_t(h)} \pm z_{1-\frac{\alpha}{2}}\sqrt{Var(E_t(h))}$$
+We are now able to plot our predicted values together with their $95\%$ Confidence Interval, and the observed values.
+```{r echo=FALSE}
+LB = rep(NA, n+10)
+
+for (i in (n+1):(n+10)){
+  LB[i] = z.for[i] - 1.96 *sqrt(error_var[i-n])
+}
+
+
+UB = rep(NA, n+10)
+for (i in (n+1):(n+10)){
+  UB[i] = z.for[i] + 1.96 *sqrt(error_var[i-n])
+}
+
+plot(z.for, type = "p", col = "darkcyan", xlim= c(n+1, n+10))
+lines(LB, type="l", col="darkgreen")
+lines(UB, type="l", col="darkgreen")
+lines(as.vector(data), type = "p", lwd = 2)
+
+
+```
+
+We are happy with our model's one-step ahead predictions. We see that the $95\%$ are quite good since they in all the cases contain the true future observations. However, we can highlight that our chosen model will perform poorly on long term predictions: if we want to predict $\hat{Z}_t(h), h>12$, we will end up with a prediction that coincides with the mean of the series, i.e. $0$.  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
